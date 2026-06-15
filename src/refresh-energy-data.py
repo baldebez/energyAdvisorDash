@@ -22,11 +22,12 @@ PERDAS_E_TAXAS = 0.0155
 IVA = 1.23
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR) # Pasta TDI onde está o index.html
+DATA_DIR = os.path.join(ROOT_DIR, "data") # Pasta de dados ao lado de src
 FICHEIRO_PRECOS_NAME = "precos_omie.txt"
-FICHEIRO_PRECOS = os.path.join(BASE_DIR, FICHEIRO_PRECOS_NAME)  # Ficheiro local antigo/alternativo
-CACHE_FOLDER = os.path.join(BASE_DIR, "cache_omie")
-META_FILE = os.path.join(BASE_DIR, "precos_omie.meta")
-SHELLY_CONSUMPTION_STATE = os.path.join(BASE_DIR, "shelly_consumo.json")
+FICHEIRO_PRECOS = os.path.join(DATA_DIR, FICHEIRO_PRECOS_NAME)  # Ficheiro local antigo/alternativo
+CACHE_FOLDER = os.path.join(DATA_DIR, "cache_omie")
+META_FILE = os.path.join(DATA_DIR, "precos_omie.meta")
+SHELLY_CONSUMPTION_STATE = os.path.join(DATA_DIR, "shelly_consumo.json")
 OMIE_LIST_URL = "https://www.omie.es/pt/file-access-list?parents=/%20Mercado%20Di%C3%A1rio/1.%20Pre%C3%A7os&dir=%20Pre%C3%A7os%20por%20hora%20do%20mercado%20di%C3%A1rio%20em%20Portugal&realdir=marginalpdbcpt"
 OMIE_DOWNLOAD_BASE = "https://www.omie.es/pt/file-download?parents=marginalpdbcpt&filename="
 CACHE_CHECK_INTERVAL = 3600  # segundos entre verificações de atualização
@@ -270,32 +271,34 @@ def calcular_consumo_diario(total_wh, preco_kwh):
 
     estado = ler_estado_consumo_shelly()
     if estado.get('current_day') != hoje:
+        # Se mudou o dia, o início de hoje é o último valor que tínhamos ontem
+        ultimo_conhecido = float(estado.get('last_total_wh', total_wh))
         estado = {
             'current_day': hoje,
-            'day_start_total_wh': total_wh,
+            'day_start_total_wh': ultimo_conhecido,
             'last_total_wh': total_wh,
-            'daily_consumed_wh': 0.0,
+            'daily_consumed_wh': max(0.0, total_wh - ultimo_conhecido),
         }
-    else:
-        ultimo_total = float(estado.get('last_total_wh', total_wh))
-        dia_inicio = float(estado.get('day_start_total_wh', total_wh))
 
-        if total_wh < ultimo_total:
+    ultimo_total = float(estado.get('last_total_wh', total_wh))
+    dia_inicio = float(estado.get('day_start_total_wh', total_wh))
+
+    if total_wh < ultimo_total:
             logger.warning(f"Reset detetado no Shelly: {ultimo_total} -> {total_wh} WH")
             dia_inicio = total_wh
             diario_wh = 0.0
-        else:
-            diario_wh = total_wh - dia_inicio
-            if diario_wh < 0:
-                diario_wh = 0.0
-            elif diario_wh > 200000:
-                logger.warning(f"Consumo suspeito ({diario_wh} WH), a reiniciar base.")
-                dia_inicio = total_wh
-                diario_wh = 0.0
+    else:
+        diario_wh = total_wh - dia_inicio
+        if diario_wh < 0:
+            diario_wh = 0.0
+        elif diario_wh > 200000: # Proteção contra saltos gigantes (ex: troca de hardware)
+            logger.warning(f"Consumo suspeito ({diario_wh} WH), a reiniciar base.")
+            dia_inicio = total_wh
+            diario_wh = 0.0
 
-        estado['daily_consumed_wh'] = diario_wh
-        estado['last_total_wh'] = total_wh
-        estado['day_start_total_wh'] = dia_inicio
+    estado['daily_consumed_wh'] = diario_wh
+    estado['last_total_wh'] = total_wh
+    estado['day_start_total_wh'] = dia_inicio
 
     gravar_estado_consumo_shelly(estado)
     consumo_kwh = estado['daily_consumed_wh'] / 1000.0
@@ -362,10 +365,15 @@ def obter_dados_shelly(ip):
 @app.get("/")
 async def serve_index():
     """Serve o dashboard HTML"""
-    index_path = os.path.join(ROOT_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    raise HTTPException(status_code=404, detail="index.html não encontrado")
+    # Tenta encontrar o index.html em vários locais possíveis
+    caminhos_possiveis = [
+        os.path.join(ROOT_DIR, "index.html"),
+        os.path.join(BASE_DIR, "index.html")
+    ]
+    for caminho in caminhos_possiveis:
+        if os.path.exists(caminho):
+            return FileResponse(caminho)
+    raise HTTPException(status_code=404, detail=f"index.html não encontrado. Verifique se o ficheiro está em {ROOT_DIR}")
 
 @app.get("/dados_energia")
 async def get_dados_energia():
@@ -420,6 +428,11 @@ if __name__ == '__main__':
     os.chdir(BASE_DIR)
     ip_local = obter_ip_local()
     logger.info(f"Dashboard disponível em: http://{ip_local}:{PORT}")
+    
+    # Verificação preventiva do index.html
+    index_check = os.path.join(ROOT_DIR, "index.html")
+    if not os.path.exists(index_check):
+        logger.warning(f"AVISO: index.html não detectado em {index_check}. O dashboard pode falhar ao carregar.")
 
     verificar_atualizacao_omie()
     thread = threading.Thread(target=atualizar_cache_periodicamente, daemon=True)

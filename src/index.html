@@ -12,12 +12,41 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
-            height: 100vh;
+            justify-content: flex-start;
+            min-height: 100vh;
+            padding: 40px 20px;
             background-color: #121212;
             color: white;
             transition: background-color 0.5s ease;
         }
+        .controles {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .btn-refresh {
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: inherit;
+            padding: 10px 25px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: all 0.2s;
+            backdrop-filter: blur(5px);
+        }
+        .btn-refresh:hover {
+            background: rgba(255, 255, 255, 0.25);
+            transform: translateY(-2px);
+        }
+        .btn-refresh:disabled {
+            opacity: 0.5;
+            cursor: wait;
+        }
+        .refresh-timer { font-size: 0.85rem; opacity: 0.6; }
         #circulo-semaforo {
             width: 250px;
             height: 250px;
@@ -34,11 +63,12 @@
             gap: 40px;
             margin-top: 30px;
             background: #1e1e1e;
-            padding: 15px 30px;
+            padding: 20px 40px;
             border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
         }
         .dado { text-align: center; }
-        .dado-valor { font-size: 2rem; font-weight: bold; color: white; }
+        .dado-valor { font-size: 2.2rem; font-weight: bold; color: white; }
         .dado-label { font-size: 0.9rem; color: #777; text-transform: uppercase; }
         .previsao {
             width: min(900px, 90vw);
@@ -46,6 +76,7 @@
             background: #1e1e1e;
             padding: 20px;
             border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
         }
         .previsao h2 {
             margin: 0 0 15px 0;
@@ -65,10 +96,10 @@
             display: flex;
             align-items: flex-end;
             gap: 4px;
-            min-width: 100%;
+            width: 100%;
             height: 220px;
             padding: 10px;
-            background: #181818;
+            background: rgba(0,0,0,0.2);
             border-radius: 12px;
         }
         .barra {
@@ -100,9 +131,13 @@
 </head>
 <body>
 
-    <div id="circulo-semaforo"></div>
     <h1 id="status-texto">A carregar...</h1>
     <p id="motivo-texto">A ligar ao servidor local...</p>
+
+    <div class="controles">
+        <button id="btn-refresh" class="btn-refresh" onclick="manualRefresh()">🔄 Atualizar Agora</button>
+        <div id="refresh-timer" class="refresh-timer">Próxima atualização em: 30s</div>
+    </div>
 
     <div class="meta-dados">
         <div class="dado">
@@ -144,17 +179,29 @@
     </div>
 
     <script>
+        const CORES = {
+            'VERDE': { fundo: '#1b5e20', texto: '#ffffff' },
+            'AMARELO': { fundo: '#fbc02d', texto: '#000000' },
+            'VERMELHO': { fundo: '#c62828', texto: '#ffffff' }
+        };
+
+        let segundosParaRefresh = 30;
+        let timerInterval;
+        const REFRESH_DEFAULT = 30;
+
         function atualizarDashboard() {
             const endpoint = location.protocol.startsWith('http') ? '/dados_energia' : 'http://127.0.0.1:8080/dados_energia';
             if (!location.protocol.startsWith('http')) {
                 document.getElementById('motivo-texto').innerText = 'Abra esta página via http://<IP>:8080 ou use o servidor local.';
             }
 
+            const btn = document.getElementById('btn-refresh');
+            if (btn) btn.disabled = true;
+
             // Faz o pedido ao script Python local que criámos
-            fetch(endpoint)
+            return fetch(endpoint)
                 .then(response => response.json())
                 .then(data => {
-                    const circulo = document.getElementById('circulo-semaforo');
                     const status = document.getElementById('status-texto');
                     const motivo = document.getElementById('motivo-texto');
                     const potencia = document.getElementById('valor-potencia');
@@ -170,6 +217,7 @@
                     document.getElementById('valor-consumo-diario').innerText = (data.consumo_diario_kwh || 0).toFixed(3) + " kWh";
                     document.getElementById('valor-custo-diario').innerText = (data.custo_diario_eur || 0).toFixed(4) + " €";
                     document.getElementById('origem-preco').innerText = data.origem_preco || 'desconhecida';
+                    document.getElementById('motivo-texto').style.color = (data.cor === 'AMARELO') ? '#333' : '#aaa';
                     
                     if(data.potencia < 0) {
                         potencia.innerText = "Prod: " + Math.abs(data.potencia) + " W";
@@ -201,18 +249,12 @@
                     }
 
                     // Atualizar Cor do Semáforo e Efeitos Visuais
-                    if (data.cor === "VERDE") {
-                        circulo.style.backgroundColor = "#4caf50";
-                        circulo.style.boxShadow = "0 0 60px #4caf50";
-                        document.body.style.backgroundColor = "#0c1a0e";
-                    } else if (data.cor === "AMARELO") {
-                        circulo.style.backgroundColor = "#ffeb3b";
-                        circulo.style.boxShadow = "0 0 60px #ffeb3b";
-                        document.body.style.backgroundColor = "#1a190c";
-                    } else if (data.cor === "VERMELHO") {
-                        circulo.style.backgroundColor = "#f44336";
-                        circulo.style.boxShadow = "0 0 60px #f44336";
-                        document.body.style.backgroundColor = "#1a0c0c";
+                    const configCor = CORES[data.cor];
+                    if (configCor) {
+                        document.body.style.backgroundColor = configCor.fundo;
+                        document.body.style.color = configCor.texto;
+                    } else {
+                        document.body.style.backgroundColor = "#121212";
                     }
                 })
                 .catch(error => {
@@ -229,9 +271,33 @@
             return true;
         };
 
-        // Atualiza os dados automaticamente de 30 em 30 segundos
-        window.addEventListener('DOMContentLoaded', atualizarDashboard);
-        setInterval(atualizarDashboard, 30000);
+        function resetTimer() {
+            clearInterval(timerInterval);
+            segundosParaRefresh = REFRESH_DEFAULT;
+            document.getElementById('btn-refresh').disabled = false;
+            
+            timerInterval = setInterval(() => {
+                segundosParaRefresh--;
+                if (segundosParaRefresh <= 0) {
+                    atualizarDashboard();
+                } else {
+                    document.getElementById('refresh-timer').innerText = `Próxima atualização em: ${segundosParaRefresh}s`;
+                }
+            }, 1000);
+        }
+
+        function manualRefresh() {
+            const btn = document.getElementById('btn-refresh');
+            btn.disabled = true;
+            btn.innerText = "A atualizar...";
+            atualizarDashboard().then(() => {
+                btn.innerText = "🔄 Atualizar Agora";
+            });
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            atualizarDashboard();
+        });
     </script>
 </body>
 </html>
