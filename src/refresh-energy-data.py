@@ -1,5 +1,3 @@
-import http.server
-import socketserver
 import urllib.request
 import urllib.parse
 import json
@@ -8,6 +6,11 @@ import os
 import re
 import threading
 import time
+import logging
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 from datetime import datetime, timedelta
 
 # --- CONFIGURAÇÕES ---
@@ -18,6 +21,7 @@ FADEQU = 1.02
 PERDAS_E_TAXAS = 0.0155
 IVA = 1.23
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(BASE_DIR) # Pasta TDI onde está o index.html
 FICHEIRO_PRECOS_NAME = "precos_omie.txt"
 FICHEIRO_PRECOS = os.path.join(BASE_DIR, FICHEIRO_PRECOS_NAME)  # Ficheiro local antigo/alternativo
 CACHE_FOLDER = os.path.join(BASE_DIR, "cache_omie")
@@ -30,6 +34,13 @@ HORAS_PREVISAO = 6  # Quantas horas para mostrar no semáforo futuro
 INTERVALO_PREVISAO_MIN = 15  # minutos por bloco na previsão
 RETENCAO_CACHE = 3  # quantos ficheiros OMIE manter localmente
 # ---------------------
+
+# Configuração de Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Semaforo Energia API")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 def obter_ip_local():
     """Obtém o IP local do PC"""
@@ -46,7 +57,7 @@ def garantir_pasta_cache():
     try:
         os.makedirs(CACHE_FOLDER, exist_ok=True)
     except Exception as e:
-        print(f"Nao foi possivel criar pasta de cache: {e}")
+        logger.error(f"Nao foi possivel criar pasta de cache: {e}")
 
 
 def caminho_cache(nome_ficheiro):
@@ -69,7 +80,7 @@ def parse_precos_omie_local():
     if os.path.exists(FICHEIRO_PRECOS):
         arquivos.insert(0, FICHEIRO_PRECOS)
 
-    print(f"Ficheiros locais OMIE: {arquivos}")
+    logger.info(f"Ficheiros locais OMIE: {arquivos}")
 
     for nome in arquivos:
         caminho = caminho_cache(nome) if nome != FICHEIRO_PRECOS else nome
@@ -77,7 +88,7 @@ def parse_precos_omie_local():
             with open(caminho, 'r', encoding='utf-8') as f:
                 linhas = f.readlines()
         except Exception as e:
-            print(f"Nao foi possivel ler {caminho}: {e}")
+            logger.error(f"Nao foi possivel ler {caminho}: {e}")
             continue
 
         for linha in linhas:
@@ -116,7 +127,7 @@ def obter_preco_omie_local():
     agora = datetime.now().replace(minute=0, second=0, microsecond=0)
     for dt, preco in entradas:
         if dt == agora:
-            print(f"Preco OMIE obtido do ficheiro local: {preco} €/MWh (hora {dt.strftime('%Y-%m-%d %H:%M')})")
+            logger.info(f"Preco OMIE local: {preco} €/MWh ({dt.strftime('%H:%M')})")
             return preco
 
     fallback = None
@@ -126,11 +137,11 @@ def obter_preco_omie_local():
             break
     if fallback:
         dt, preco = fallback
-        print(f"Hora exata nao encontrada. Usando preco OMIE de {dt.strftime('%Y-%m-%d %H:%M')}: {preco} €/MWh")
+        logger.warning(f"Hora exata não encontrada. Usando fallback {dt.strftime('%H:%M')}: {preco} €/MWh")
         return preco
 
     dt, preco = entradas[0]
-    print(f"Hora nao encontrada no ficheiro. Usando primeiro preco disponivel: {preco} €/MWh ({dt.strftime('%Y-%m-%d %H:%M')})")
+    logger.warning(f"Usando primeiro preço disponível: {preco} €/MWh")
     return preco
 
 
@@ -187,7 +198,7 @@ def ler_nome_meta_local():
             nome = f.read().strip()
         return nome or None
     except Exception as e:
-        print(f"Erro ao ler meta local: {e}")
+        logger.error(f"Erro ao ler meta local: {e}")
         return None
 
 
@@ -196,7 +207,7 @@ def gravar_nome_meta_local(nome):
         with open(META_FILE, 'w', encoding='utf-8') as f:
             f.write(nome)
     except Exception as e:
-        print(f"Erro ao gravar meta local: {e}")
+        logger.error(f"Erro ao gravar meta local: {e}")
 
 
 def obter_ultima_fonte_omie():
@@ -205,17 +216,14 @@ def obter_ultima_fonte_omie():
         with urllib.request.urlopen(req, timeout=15) as response:
             html = response.read().decode('utf-8', errors='ignore')
     except Exception as e:
-        print(f"Erro ao consultar lista OMIE: {e}")
+        logger.error(f"Erro ao consultar lista OMIE: {e}")
         return None
 
     html = html.replace('&amp;', '&')
     pattern = re.compile(r'href=["\'](/pt/file-download\?parents=marginalpdbcpt&filename=(marginalpdbcpt_\d{8}\.1))["\']', re.IGNORECASE)
     matches = pattern.findall(html)
     if not matches:
-        primeiro = html.find('file-download')
-        snippet = html[primeiro - 150:primeiro + 250] if primeiro != -1 else html[:400]
-        print("Nao foi possivel extrair o ficheiro mais recente da lista OMIE")
-        print(f"Snippet OMIE: {snippet}")
+        logger.error("Não foi possível encontrar ficheiros na lista OMIE")
         return None
 
     nomes = sorted({m[1] for m in matches}, reverse=True)
@@ -231,9 +239,9 @@ def manter_cache_omie():
         caminho = caminho_cache(nome)
         try:
             os.remove(caminho)
-            print(f"Removido ficheiro antigo de cache: {nome}")
+            logger.info(f"Cache removida: {nome}")
         except Exception as e:
-            print(f"Erro ao remover ficheiro antigo {nome}: {e}")
+            logger.error(f"Erro ao remover cache {nome}: {e}")
 
 
 def ler_estado_consumo_shelly():
@@ -243,7 +251,7 @@ def ler_estado_consumo_shelly():
         with open(SHELLY_CONSUMPTION_STATE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        print(f"Erro ao ler estado de consumo Shelly: {e}")
+        logger.error(f"Erro ao ler estado Shelly: {e}")
         return {}
 
 
@@ -252,7 +260,7 @@ def gravar_estado_consumo_shelly(estado):
         with open(SHELLY_CONSUMPTION_STATE, 'w', encoding='utf-8') as f:
             json.dump(estado, f, indent=2)
     except Exception as e:
-        print(f"Erro ao gravar estado de consumo Shelly: {e}")
+        logger.error(f"Erro ao gravar estado Shelly: {e}")
 
 
 def calcular_consumo_diario(total_wh, preco_kwh):
@@ -273,7 +281,7 @@ def calcular_consumo_diario(total_wh, preco_kwh):
         dia_inicio = float(estado.get('day_start_total_wh', total_wh))
 
         if total_wh < ultimo_total:
-            print(f"Detetado reset do contador Shelly: ultimo={ultimo_total} WH, atual={total_wh} WH")
+            logger.warning(f"Reset detetado no Shelly: {ultimo_total} -> {total_wh} WH")
             dia_inicio = total_wh
             diario_wh = 0.0
         else:
@@ -281,7 +289,7 @@ def calcular_consumo_diario(total_wh, preco_kwh):
             if diario_wh < 0:
                 diario_wh = 0.0
             elif diario_wh > 200000:
-                print(f"Valor de consumo diário suspeito: {diario_wh} WH; reiniciando base. total_wh={total_wh}, dia_inicio={dia_inicio}")
+                logger.warning(f"Consumo suspeito ({diario_wh} WH), a reiniciar base.")
                 dia_inicio = total_wh
                 diario_wh = 0.0
 
@@ -310,10 +318,10 @@ def baixar_ultimo_ficheiro_omie(nome_ficheiro):
         os.replace(tmp, caminho)
         gravar_nome_meta_local(nome_ficheiro)
         manter_cache_omie()
-        print(f"Ficheiro OMIE atualizado: {nome_ficheiro}")
+        logger.info(f"Ficheiro OMIE atualizado: {nome_ficheiro}")
         return True
     except Exception as e:
-        print(f"Erro ao descarregar ficheiro OMIE {nome_ficheiro}: {e}")
+        logger.error(f"Erro ao descarregar OMIE {nome_ficheiro}: {e}")
         return False
 
 
@@ -324,10 +332,10 @@ def verificar_atualizacao_omie():
 
     atual = ler_nome_meta_local()
     if atual == ultima and os.path.exists(caminho_cache(ultima)):
-        print(f"Cache OMIE atual ja esta em {atual}")
+        logger.info(f"Cache OMIE já está atualizada ({atual})")
         return True
 
-    print(f"Nova versao OMIE disponivel: {ultima} (atual: {atual or 'nenhuma'})")
+    logger.info(f"Nova versão OMIE disponível: {ultima}")
     return baixar_ultimo_ficheiro_omie(ultima)
 
 
@@ -336,128 +344,85 @@ def atualizar_cache_periodicamente():
         verificar_atualizacao_omie()
         time.sleep(CACHE_CHECK_INTERVAL)
 
-class SemaforoHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/dados_energia':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*') # Resolve o CORS
-            self.end_headers()
-            
-            # 1. Obter Potência em tempo real do Shelly EM
-            potencia = 0
-            total_wh = 0
-            try:
-                # Na geração 1 do Shelly EM o endpoint é /status. Na Gen2/3 é /rpc/EM.GetStatus?id=0
-                # Ajuste o URL conforme a geração do seu Shelly
-                with urllib.request.urlopen(f"http://{SHELLY_EM_IP}/status", timeout=10) as response:
-                    dados_shelly = json.loads(response.read().decode())
-                    potencia = dados_shelly['emeters'][0].get('power', 0)
-                    total_wh = dados_shelly['emeters'][0].get('total', 0)
-            except Exception as e:
-                print(f"Erro ao ler Shelly EM: {e}")
-
-            # 2. Obter Preço Atual do OMIE (Tentando: ficheiro local → APIs online)
-            preco_omie_mwh = 50.0  # Valor de segurança padrão
-            origem_preco = "fallback"
-            
-            # Primeira tentativa: Ficheiro local
-            preco_local = obter_preco_omie_local()
-            if preco_local is not None:
-                preco_omie_mwh = preco_local
-                origem_preco = "local"
-            else:
-                # Se ficheiro local falhar, tentar APIs online
-                print("   Tentando obter preço de APIs online...")
-                apis_omie = [
-                    "https://api.precosdoomie.pt/v1/today",
-                    "https://www.omie.pt/api/public/preco-medio-horario",
-                ]
-                
-                for url_api in apis_omie:
-                    try:
-                        print(f"   Tentando: {url_api}")
-                        with urllib.request.urlopen(url_api, timeout=3) as response:
-                            dados_omie = json.loads(response.read().decode())
-                            # Tenta vários formatos de resposta
-                            if 'hours' in dados_omie:
-                                hora_atual = datetime.now().hour
-                                preco_omie_mwh = dados_omie['hours'][hora_atual]['price']
-                            elif 'price' in dados_omie:
-                                preco_omie_mwh = dados_omie['price']
-                            elif isinstance(dados_omie, list) and len(dados_omie) > 0:
-                                hora_atual = datetime.now().hour
-                                if hora_atual < len(dados_omie):
-                                    preco_omie_mwh = dados_omie[hora_atual]
-                            
-                            origem_preco = "online"
-                            print(f"Preco OMIE (API online): {preco_omie_mwh} €/MWh")
-                            break  # Sucesso, sair do loop
-                            
-                    except urllib.error.URLError as e:
-                        print(f"   {url_api}: {e.reason}")
-                    except json.JSONDecodeError:
-                        print(f"   Resposta invalida de {url_api}")
-                    except Exception as e:
-                        print(f"   Erro: {type(e).__name__}")
-                else:
-                    # Se chegou aqui, nenhuma API funcionou
-                    print(f"APIs offline. Usando preco fallback: {preco_omie_mwh} €/MWh")
-
-            previsao_omie = obter_previsao_omie_local()
-
-            # 3. Calcular Preço Final com a fórmula G9
-            preco_kwh_base = preco_omie_mwh / 1000
-            preco_final_kwh = ((preco_kwh_base * FADEQU * 1.15) + PERDAS_E_TAXAS + TARIFA_ACESSO) * IVA
-
-            # 3.1 Calcular Custo Instantâneo
-            potencia_kw = potencia / 1000
-            custo_por_hora = potencia_kw * preco_final_kwh
-            custo_por_minuto = custo_por_hora / 60
-
-            # 4. Árvore de Decisão do Semáforo
-            if potencia < -50:
-                cor = "VERDE"
-                motivo = f"Excedente Solar! A injetar {-int(potencia)}W"
-            elif preco_final_kwh <= 0.12:
-                cor = "VERDE"
-                motivo = f"Energia da rede barata ({preco_final_kwh:.3f}€/kWh)"
-            elif preco_final_kwh < 0.22:
-                cor = "AMARELO"
-                motivo = f"Preço moderado ({preco_final_kwh:.3f}€/kWh)"
-            else:
-                cor = "VERMELHO"
-                motivo = f"PICO DE PREÇO! Evitar consumos ({preco_final_kwh:.3f}€/kWh)"
-
-            consumo_diario_kwh, custo_diario_eur = calcular_consumo_diario(total_wh, preco_final_kwh)
-
-            resposta = {
-                "potencia": potencia,
-                "preco_kwh": round(preco_final_kwh, 3),
-                "custo_por_hora": round(custo_por_hora, 4),
-                "custo_por_minuto": round(custo_por_minuto, 6),
-                "consumo_diario_kwh": consumo_diario_kwh,
-                "custo_diario_eur": custo_diario_eur,
-                "cor": cor,
-                "motivo": motivo,
-                "origem_preco": origem_preco,
-                "previsao": previsao_omie
+def obter_dados_shelly(ip):
+    """Centraliza a lógica de busca de dados do hardware Shelly"""
+    try:
+        url = f"http://{ip}/status"
+        with urllib.request.urlopen(url, timeout=5) as response:
+            dados = json.loads(response.read().decode())
+            emeter = dados.get('emeters', [{}])[0]
+            return {
+                "potencia": emeter.get('power', 0),
+                "total_wh": emeter.get('total', 0)
             }
-            
-            self.wfile.write(json.dumps(resposta).encode())
-        else:
-            # Serve os ficheiros HTML normais que estiverem na mesma pasta
-            super().do_GET()
+    except Exception as e:
+        logger.error(f"Erro Shelly ({ip}): {e}")
+        return {"potencia": 0, "total_wh": 0}
+
+@app.get("/")
+async def serve_index():
+    """Serve o dashboard HTML"""
+    index_path = os.path.join(ROOT_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    raise HTTPException(status_code=404, detail="index.html não encontrado")
+
+@app.get("/dados_energia")
+async def get_dados_energia():
+    dados_h = obter_dados_shelly(SHELLY_EM_IP)
+    potencia = dados_h["potencia"]
+    total_wh = dados_h["total_wh"]
+
+    preco_omie_mwh = 50.0
+    origem_preco = "fallback"
+    
+    preco_local = obter_preco_omie_local()
+    if preco_local is not None:
+        preco_omie_mwh = preco_local
+        origem_preco = "local"
+    else:
+        # Tenta API online se local falhar
+        try:
+            with urllib.request.urlopen("https://api.precosdoomie.pt/v1/today", timeout=3) as r:
+                dados_omie = json.loads(r.read().decode())
+                preco_omie_mwh = dados_omie['hours'][datetime.now().hour]['price']
+                origem_preco = "online"
+        except:
+            logger.error("Falha em todas as fontes de preço. Usando fallback.")
+
+    previsao_omie = obter_previsao_omie_local()
+    preco_kwh_base = preco_omie_mwh / 1000
+    preco_final_kwh = ((preco_kwh_base * FADEQU * 1.15) + PERDAS_E_TAXAS + TARIFA_ACESSO) * IVA
+    
+    custo_por_hora = (potencia / 1000) * preco_final_kwh
+
+    if potencia < -50:
+        cor, motivo = "VERDE", f"Excedente Solar! A injetar {-int(potencia)}W"
+    else:
+        cor, motivo = obter_semaforo_por_preco(preco_final_kwh)
+
+    consumo_diario_kwh, custo_diario_eur = calcular_consumo_diario(total_wh, preco_final_kwh)
+
+    return {
+        "potencia": potencia,
+        "preco_kwh": round(preco_final_kwh, 3),
+        "custo_por_hora": round(custo_por_hora, 4),
+        "custo_por_minuto": round(custo_por_hora / 60, 6),
+        "consumo_diario_kwh": consumo_diario_kwh,
+        "custo_diario_eur": custo_diario_eur,
+        "cor": cor,
+        "motivo": motivo,
+        "origem_preco": origem_preco,
+        "previsao": previsao_omie
+    }
 
 if __name__ == '__main__':
     os.chdir(BASE_DIR)
     ip_local = obter_ip_local()
-    print(f"Servidor do Semaforo a correr no porto {PORT}")
-    print(f"No tablet, abra o browser em http://{ip_local}:8080")
+    logger.info(f"Dashboard disponível em: http://{ip_local}:{PORT}")
 
     verificar_atualizacao_omie()
     thread = threading.Thread(target=atualizar_cache_periodicamente, daemon=True)
     thread.start()
 
-    with socketserver.TCPServer(("", PORT), SemaforoHandler) as httpd:
-        httpd.serve_forever()
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
