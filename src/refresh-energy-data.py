@@ -170,7 +170,8 @@ def obter_previsao_omie_online():
                             "cor": cor,
                             "motivo": mensagem,
                             "valor": preco_final_kwh,
-                            "ts": dt.timestamp()
+                            "ts": dt.timestamp(),
+                            "preco_original_mwh": round(preco_mwh, 2)
                         })
             except:
                 continue
@@ -211,7 +212,8 @@ def obter_previsao_omie_local(horas=HORAS_PREVISAO, intervalo_minutos=INTERVALO_
                 "cor": cor,
                 "motivo": mensagem,
                 "valor": preco_final_kwh,
-                "ts": bloco_ts
+                "ts": bloco_ts,
+                "preco_original_mwh": round(preco_mwh, 2)
             })
         else:
             # 2. Se não houver no local, procurar na fonte online (arredondando para a hora)
@@ -231,11 +233,11 @@ def obter_previsao_omie_local(horas=HORAS_PREVISAO, intervalo_minutos=INTERVALO_
 
 def obter_semaforo_por_preco(preco_final_kwh):
     if preco_final_kwh <= 0.12:
-        return "VERDE", f"Rede barata ({preco_final_kwh:.3f}€/kWh)"
+        return "VERDE", "Preço Económico"
     elif preco_final_kwh < 0.22:
-        return "AMARELO", f"Preço moderado ({preco_final_kwh:.3f}€/kWh)"
+        return "AMARELO", "Preço Moderado"
     else:
-        return "VERMELHO", f"Pico de preço ({preco_final_kwh:.3f}€/kWh)"
+        return "VERMELHO", "Pico de Preço"
 
 
 def ler_nome_meta_local():

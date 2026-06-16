@@ -41,7 +41,7 @@
             transition: all 0.2s;
             backdrop-filter: blur(5px);
         }
-        .btn-refresh:hover {
+        .btn-refresh:hover:not(:disabled) {
             background: rgba(255, 255, 255, 0.25);
             transform: translateY(-2px);
         }
@@ -49,34 +49,44 @@
             opacity: 0.5;
             cursor: wait;
         }
-        .refresh-timer { font-size: 0.85rem; opacity: 0.6; }
         #circulo-semaforo {
-            width: 250px;
-            height: 250px;
+            width: 280px;
+            height: 280px;
             border-radius: 50%;
             background-color: #333;
             box-shadow: 0 0 50px rgba(0,0,0,0.5);
-            margin-bottom: 30px;
+            margin: 20px 0;
             transition: all 0.5s ease;
-        }
-        h1 { font-size: 3rem; margin: 0 0 10px 0; text-align: center; }
-        p { font-size: 1.5rem; color: #aaa; margin: 5px 0; text-align: center; max-width: 80%; }
-        .meta-dados {
             display: flex;
-            flex-wrap: wrap;
+            flex-direction: column;
+            align-items: center;
             justify-content: center;
-            gap: 20px;
-            margin-top: 30px;
-            background: #1e1e1e;
-            padding: 20px;
-            width: 100%;
-            max-width: 1000px;
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            border: 8px solid rgba(255,255,255,0.1);
         }
-        .dado { text-align: center; }
-        .dado-valor { font-size: 2.2rem; font-weight: bold; color: white; }
-        .dado-label { font-size: 0.9rem; color: #777; text-transform: uppercase; }
+        .preco-principal {
+            font-size: 3.5rem;
+            font-weight: 800;
+            margin: 0;
+            line-height: 1;
+        }
+        .preco-unidade {
+            font-size: 1.2rem;
+            opacity: 0.8;
+            font-weight: 400;
+            margin-top: 5px;
+        }
+        h1 { font-size: 3.2rem; margin: 20px 0 10px 0; text-align: center; text-transform: uppercase; letter-spacing: 2px; font-weight: 800; }
+        
+        .footer-info {
+            position: fixed;
+            bottom: 20px;
+            display: flex;
+            gap: 20px;
+            font-size: 0.8rem;
+            opacity: 0.5;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
         .previsao {
             width: min(900px, 90vw);
             margin-top: 30px;
@@ -147,43 +157,83 @@
         .previsao-hora { font-size: 0.9rem; color: #ccc; }
         .previsao-cor { font-size: 0.95rem; font-weight: bold; }
         .previsao-preco { font-size: 1.1rem; }
+
+        /* Tabela Resumo Canto Superior Direito */
+        .tabela-resumo {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(30, 30, 30, 0.7);
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 160px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            z-index: 100;
+        }
+        .resumo-item { text-align: right; }
+        .resumo-valor { font-size: 1.4rem; font-weight: bold; color: white; display: block; }
+        .resumo-label { font-size: 0.7rem; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+
+        /* Tabela Instantânea Canto Superior Esquerdo */
+        .tabela-instantanea {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(30, 30, 30, 0.7);
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 160px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            z-index: 100;
+        }
+        .instantanea-item { text-align: left; }
+        .instantanea-valor { font-size: 1.4rem; font-weight: bold; color: white; display: block; }
+        .instantanea-label { font-size: 0.7rem; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
     </style>
 </head>
 <body>
 
-    <h1 id="status-texto">A carregar...</h1>
-    <p id="motivo-texto">A ligar ao servidor local...</p>
+    <div class="tabela-instantanea">
+        <div class="instantanea-item">
+            <div id="valor-potencia" class="instantanea-valor">0 W</div>
+            <div class="instantanea-label">Consumo Atual</div>
+        </div>
+        <div class="instantanea-item">
+            <div id="valor-custo" class="instantanea-valor">0.0000 €/h</div>
+            <div class="instantanea-label">Custo Instantâneo</div>
+        </div>
+    </div>
+
+    <div class="tabela-resumo">
+        <div class="resumo-item">
+            <div id="valor-consumo-diario" class="resumo-valor">0.000 kWh</div>
+            <div class="resumo-label">Consumo Hoje</div>
+        </div>
+        <div class="resumo-item">
+            <div id="valor-custo-diario" class="resumo-valor">0.0000 €</div>
+            <div class="resumo-label">Custo Hoje</div>
+        </div>
+    </div>
+
+    <h1 id="motivo-texto">A carregar...</h1>
+
+    <div id="circulo-semaforo">
+        <div id="valor-preco" class="preco-principal">---</div>
+        <div class="preco-unidade">€ / kWh</div>
+    </div>
 
     <div class="controles">
         <button id="btn-refresh" class="btn-refresh" onclick="manualRefresh()">🔄 Atualizar Agora</button>
-        <div id="refresh-timer" class="refresh-timer">Próxima atualização em: 30s</div>
-    </div>
-
-    <div class="meta-dados">
-        <div class="dado">
-            <div id="valor-potencia" class="dado-valor">0 W</div>
-            <div class="dado-label">Consumo Atual</div>
-        </div>
-        <div class="dado">
-            <div id="valor-preco" class="dado-valor">0.000 €</div>
-            <div class="dado-label">Preço kWh (C/IVA)</div>
-        </div>
-        <div class="dado">
-            <div id="valor-custo" class="dado-valor">0.0000 €/h</div>
-            <div class="dado-label">Custo Instantâneo</div>
-        </div>
-        <div class="dado">
-            <div id="valor-consumo-diario" class="dado-valor">0.000 kWh</div>
-            <div class="dado-label">Consumo Hoje</div>
-        </div>
-        <div class="dado">
-            <div id="valor-custo-diario" class="dado-valor">0.0000 €</div>
-            <div class="dado-label">Custo Hoje</div>
-        </div>
-        <div class="dado">
-            <div id="origem-preco" class="dado-valor">local</div>
-            <div class="dado-label">Origem do Preço</div>
-        </div>
     </div>
 
     <div class="previsao">
@@ -196,6 +246,12 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <div class="footer-info">
+        <span id="refresh-timer">Atualização em: 30s</span>
+        <span>•</span>
+        <span>Origem: <span id="origem-preco">---</span></span>
     </div>
 
     <script>
@@ -219,7 +275,6 @@
             return fetch(endpoint)
                 .then(response => response.json())
                 .then(data => {
-                    const status = document.getElementById('status-texto');
                     const motivo = document.getElementById('motivo-texto');
                     const potencia = document.getElementById('valor-potencia');
                     const preco = document.getElementById('valor-preco');
@@ -227,15 +282,14 @@
                     const grafico = document.getElementById('grafico-previsao');
 
                     // Atualizar Textos e Números
-                    status.innerText = data.cor;
                     motivo.innerText = data.motivo;
                     preco.title = data.detalhe_preco;
-                    preco.innerText = data.preco_kwh + " €";
+                    preco.innerText = data.preco_kwh.toFixed(3);
                     custo.innerText = data.custo_por_hora.toFixed(4) + " €/h";
                     document.getElementById('valor-consumo-diario').innerText = (data.consumo_diario_kwh || 0).toFixed(3) + " kWh";
                     document.getElementById('valor-custo-diario').innerText = (data.custo_diario_eur || 0).toFixed(4) + " €";
                     document.getElementById('origem-preco').innerText = data.origem_preco || 'desconhecida';
-                    document.getElementById('motivo-texto').style.color = (data.cor === 'AMARELO') ? '#333' : '#aaa';
+                    motivo.style.opacity = (data.cor === 'AMARELO') ? '0.7' : '1';
                     
                     if(data.potencia < 0) {
                         potencia.innerText = "Prod: " + Math.abs(data.potencia) + " W";
@@ -264,7 +318,7 @@
                             const label = horaCompleta.endsWith(':00') ? horaCompleta.replace(':00', 'h') : '';
 
                             barra.innerHTML = `
-                                <div class="barra-valor" style="height: ${altura}%; background: ${cor};" title="${item.hora} — ${item.preco_kwh} €/kWh"></div>
+                                <div class="barra-valor" style="height: ${altura}%; background: ${cor};" title="${item.hora} — ${item.preco_kwh} €/kWh (Original: ${item.preco_original_mwh} €/MWh)"></div>
                                 <div class="barra-label">${label}</div>
                             `;
                             grafico.appendChild(barra);
