@@ -32,7 +32,7 @@ SHELLY_CONSUMPTION_STATE = os.path.join(DATA_DIR, "shelly_consumo.json")
 OMIE_LIST_URL = "https://www.omie.es/pt/file-access-list?parents=/%20Mercado%20Di%C3%A1rio/1.%20Pre%C3%A7os&dir=%20Pre%C3%A7os%20por%20hora%20do%20mercado%20di%C3%A1rio%20em%20Portugal&realdir=marginalpdbcpt"
 OMIE_DOWNLOAD_BASE = "https://www.omie.es/pt/file-download?parents=marginalpdbcpt&filename="
 CACHE_CHECK_INTERVAL = 3600  # segundos entre verificações de atualização
-HORAS_PREVISAO = 6  # Quantas horas para mostrar no semáforo futuro
+HORAS_PREVISAO = 12  # Quantas horas para mostrar no semáforo futuro
 INTERVALO_PREVISAO_MIN = 15  # minutos por bloco na previsão
 RETENCAO_CACHE = 3  # quantos ficheiros OMIE manter localmente
 # ---------------------
@@ -96,25 +96,20 @@ def parse_precos_omie_local():
 
         for linha in linhas:
             partes = linha.strip().split(';')
-            if len(partes) < 5 or not partes[0].isdigit():
+            if len(partes) < 6 or not partes[0].isdigit():
                 continue
             try:
                 ano = int(partes[0])
                 mes = int(partes[1])
                 dia = int(partes[2])
-                hora = int(partes[3])
-                preco = None
-                for valor in reversed(partes[5:]):
-                    if valor.strip() == '':
-                        continue
-                    preco = float(valor.replace(',', '.')) # Converte vírgula europeia para ponto
-                    break
-                if preco is None:
-                    continue
+                periodo = int(partes[3]) # 1 a 96 (periodos de 15 min)
+                # O preço de Portugal está na 6ª coluna (índice 5)
+                preco = float(partes[5].replace(',', '.'))
             except Exception:
                 continue
 
-            dt = datetime(ano, mes, dia, 0, 0) + timedelta(hours=hora - 1)
+            # Converte o período (1-96) para o timestamp correto (00:00, 00:15, ...)
+            dt = datetime(ano, mes, dia) + timedelta(minutes=(periodo - 1) * 15)
             entradas.append((dt, preco))
 
     entradas.sort(key=lambda x: x[0])
@@ -122,30 +117,28 @@ def parse_precos_omie_local():
     return entradas
 
 
+def encontrar_preco_em_data(dt_alvo, entradas):
+    """Encontra o último preço disponível para um determinado momento"""
+    preco_encontrado = None
+    for dt_e, preco in entradas:
+        if dt_e <= dt_alvo:
+            preco_encontrado = preco
+        else:
+            break
+    return preco_encontrado
+
 def obter_preco_omie_local():
     entradas = parse_precos_omie_local()
     if not entradas:
         return None
-
-    agora = datetime.now().replace(minute=0, second=0, microsecond=0)
-    for dt, preco in entradas:
-        if dt == agora:
-            logger.info(f"Preco OMIE local: {preco} €/MWh ({dt.strftime('%H:%M')})")
-            return preco
-
-    fallback = None
-    for dt, preco in reversed(entradas):
-        if dt <= agora:
-            fallback = (dt, preco)
-            break
-    if fallback:
-        dt, preco = fallback
-        logger.warning(f"Hora exata não encontrada. Usando fallback {dt.strftime('%H:%M')}: {preco} €/MWh")
+    
+    agora = datetime.now()
+    preco = encontrar_preco_em_data(agora, entradas)
+    if preco is not None:
+        logger.info(f"Preco OMIE local encontrado: {preco} €/MWh")
         return preco
-
-    dt, preco = entradas[0]
-    logger.warning(f"Usando primeiro preço disponível: {preco} €/MWh")
-    return preco
+    
+    return entradas[0][1] if entradas else None
 
 
 def obter_previsao_omie_online():
@@ -188,38 +181,50 @@ def obter_previsao_omie_online():
 
 def obter_previsao_omie_local(horas=HORAS_PREVISAO, intervalo_minutos=INTERVALO_PREVISAO_MIN):
     entradas = parse_precos_omie_local()
-    if not entradas: # Se local falhar, tenta online imediatamente
-        return obter_previsao_omie_online()
+    # Obtém dados online como backup para preencher lacunas (ex: amanhã ainda não descarregado)
+    previsao_online = obter_previsao_omie_online()
+    
+    # Mapeia a previsão online por hora para consulta rápida
+    mapa_online = {p['ts']: p for p in previsao_online}
 
-    agora = datetime.now().replace(minute=0, second=0, microsecond=0)
-    preco_por_hora = {dt.replace(minute=0, second=0, microsecond=0): preco for dt, preco in entradas}
-
+    agora = datetime.now()
+    # Alinha o início da previsão com o múltiplo de 15 minutos anterior
+    agora = agora.replace(minute=(agora.minute // 15) * 15, second=0, microsecond=0)
+    
     previsao = []
     total_blocos = int(horas * 60 / intervalo_minutos)
+    
     for i in range(total_blocos):
         bloco_dt = agora + timedelta(minutes=i * intervalo_minutos)
-        bloco_hora = bloco_dt.replace(minute=0, second=0, microsecond=0)
-        preco_mwh = preco_por_hora.get(bloco_hora)
-        if preco_mwh is None:
-            # tenta encontrar o último preço conhecido antes do bloco
-            possivel = [preco for dt, preco in entradas if dt <= bloco_hora]
-            if possivel:
-                preco_mwh = possivel[-1]
-        if preco_mwh is None:
-            continue
+        bloco_ts = bloco_dt.timestamp()
 
-        preco_kwh_base = preco_mwh / 1000
-        preco_final_kwh = ((preco_kwh_base * FADEQU * 1.15) + PERDAS_E_TAXAS + TARIFA_ACESSO) * IVA
-        logger.debug(f"Previsão {bloco_dt.strftime('%d/%m %H:%M')}: {preco_final_kwh:.3f} €/kWh")
-        cor, mensagem = obter_semaforo_por_preco(preco_final_kwh)
-        previsao.append({
-            "hora": bloco_dt.strftime('%d/%m %H:%M'),
-            "preco_kwh": round(preco_final_kwh, 3),
-            "cor": cor,
-            "motivo": mensagem,
-            "valor": preco_final_kwh,
-            "ts": bloco_dt.timestamp()
-        })
+        # 1. Tentar encontrar no CSV local (precisão de 15 min)
+        preco_mwh = encontrar_preco_em_data(bloco_dt, entradas)
+        
+        if preco_mwh is not None:
+            preco_kwh_base = preco_mwh / 1000
+            preco_final_kwh = ((preco_kwh_base * FADEQU * 1.15) + PERDAS_E_TAXAS + TARIFA_ACESSO) * IVA
+            cor, mensagem = obter_semaforo_por_preco(preco_final_kwh)
+            previsao.append({
+                "hora": bloco_dt.strftime('%d/%m %H:%M'),
+                "preco_kwh": round(preco_final_kwh, 3),
+                "cor": cor,
+                "motivo": mensagem,
+                "valor": preco_final_kwh,
+                "ts": bloco_ts
+            })
+        else:
+            # 2. Se não houver no local, procurar na fonte online (arredondando para a hora)
+            ts_hora = bloco_dt.replace(minute=0, second=0, microsecond=0).timestamp()
+            if ts_hora in mapa_online:
+                item_online = mapa_online[ts_hora].copy()
+                # Ajustamos os metadados do item online para corresponder ao bloco de 15m
+                item_online["hora"] = bloco_dt.strftime('%d/%m %H:%M')
+                item_online["ts"] = bloco_ts
+                previsao.append(item_online)
+            else:
+                # 3. Se não houver em lado nenhum, saltamos o bloco
+                continue
 
     return previsao
 
@@ -449,7 +454,7 @@ async def get_dados_energia():
     
     # Filtrar para mostrar apenas do "agora" em diante
     agora_ts = agora_base.timestamp()
-    previsao_omie = [p for p in previsao_omie if p.get('ts', 0) >= agora_ts - 3600][:24]
+    previsao_omie = [p for p in previsao_omie if p.get('ts', 0) >= agora_ts - 900][:48] # 48 blocos = 12h
 
     preco_kwh_base = preco_omie_mwh / 1000
     preco_final_kwh = ((preco_kwh_base * FADEQU * 1.15) + PERDAS_E_TAXAS + TARIFA_ACESSO) * IVA
