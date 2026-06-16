@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import logging
+import ssl
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -86,7 +87,8 @@ def parse_precos_omie_local():
     for nome in arquivos:
         caminho = caminho_cache(nome) if nome != FICHEIRO_PRECOS else nome
         try:
-            with open(caminho, 'r', encoding='utf-8') as f:
+            # OMIE usa frequentemente latin-1 ou utf-8 com caracteres específicos
+            with open(caminho, 'r', encoding='latin-1') as f:
                 linhas = f.readlines()
         except Exception as e:
             logger.error(f"Nao foi possivel ler {caminho}: {e}")
@@ -102,10 +104,10 @@ def parse_precos_omie_local():
                 dia = int(partes[2])
                 hora = int(partes[3])
                 preco = None
-                for valor in reversed(partes[4:]):
+                for valor in reversed(partes[5:]):
                     if valor.strip() == '':
                         continue
-                    preco = float(valor)
+                    preco = float(valor.replace(',', '.')) # Converte vírgula europeia para ponto
                     break
                 if preco is None:
                     continue
@@ -146,10 +148,48 @@ def obter_preco_omie_local():
     return preco
 
 
+def obter_previsao_omie_online():
+    """Tenta obter a previsão diretamente da API JSON (mais fiável que o CSV)"""
+    try:
+        context = ssl._create_unverified_context()
+        # Vamos buscar hoje e amanhã para garantir que o gráfico nunca fica vazio à noite
+        previsao_final = []
+        for dia in ["today", "tomorrow"]:
+            url = f"https://api.precosdoomie.pt/v1/{dia}"
+            try:
+                with urllib.request.urlopen(url, timeout=5, context=context) as r:
+                    dados = json.loads(r.read().decode())
+                    for h_info in dados.get('hours', []):
+                        # A API usa formato "00-01", "01-02"...
+                        hora_inicio = int(h_info['hour'].split('-')[0])
+                        # Criar datetime para o dia correspondente
+                        dt = datetime.now() if dia == "today" else datetime.now() + timedelta(days=1)
+                        dt = dt.replace(hour=hora_inicio, minute=0, second=0, microsecond=0)
+                        
+                        preco_mwh = float(h_info['price'])
+                        preco_kwh_base = preco_mwh / 1000
+                        preco_final_kwh = ((preco_kwh_base * FADEQU * 1.15) + PERDAS_E_TAXAS + TARIFA_ACESSO) * IVA
+                        
+                        cor, mensagem = obter_semaforo_por_preco(preco_final_kwh)
+                        previsao_final.append({
+                            "hora": dt.strftime('%d/%m %H:%M'),
+                            "preco_kwh": round(preco_final_kwh, 3),
+                            "cor": cor,
+                            "motivo": mensagem,
+                            "valor": preco_final_kwh,
+                            "ts": dt.timestamp()
+                        })
+            except:
+                continue
+        return sorted(previsao_final, key=lambda x: x['ts'])
+    except Exception as e:
+        logger.error(f"Erro na previsao online: {e}")
+        return []
+
 def obter_previsao_omie_local(horas=HORAS_PREVISAO, intervalo_minutos=INTERVALO_PREVISAO_MIN):
     entradas = parse_precos_omie_local()
-    if not entradas:
-        return []
+    if not entradas: # Se local falhar, tenta online imediatamente
+        return obter_previsao_omie_online()
 
     agora = datetime.now().replace(minute=0, second=0, microsecond=0)
     preco_por_hora = {dt.replace(minute=0, second=0, microsecond=0): preco for dt, preco in entradas}
@@ -170,13 +210,15 @@ def obter_previsao_omie_local(horas=HORAS_PREVISAO, intervalo_minutos=INTERVALO_
 
         preco_kwh_base = preco_mwh / 1000
         preco_final_kwh = ((preco_kwh_base * FADEQU * 1.15) + PERDAS_E_TAXAS + TARIFA_ACESSO) * IVA
+        logger.debug(f"Previsão {bloco_dt.strftime('%d/%m %H:%M')}: {preco_final_kwh:.3f} €/kWh")
         cor, mensagem = obter_semaforo_por_preco(preco_final_kwh)
         previsao.append({
             "hora": bloco_dt.strftime('%d/%m %H:%M'),
             "preco_kwh": round(preco_final_kwh, 3),
             "cor": cor,
             "motivo": mensagem,
-            "valor": preco_final_kwh
+            "valor": preco_final_kwh,
+            "ts": bloco_dt.timestamp()
         })
 
     return previsao
@@ -214,7 +256,8 @@ def gravar_nome_meta_local(nome):
 def obter_ultima_fonte_omie():
     try:
         req = urllib.request.Request(OMIE_LIST_URL, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as response:
+        context = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=15, context=context) as response:
             html = response.read().decode('utf-8', errors='ignore')
     except Exception as e:
         logger.error(f"Erro ao consultar lista OMIE: {e}")
@@ -311,7 +354,8 @@ def baixar_ultimo_ficheiro_omie(nome_ficheiro):
     url = OMIE_DOWNLOAD_BASE + urllib.parse.quote(nome_ficheiro, safe='')
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=20) as response:
+        context = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=20, context=context) as response:
             conteudo = response.read()
 
         caminho = caminho_cache(nome_ficheiro)
@@ -391,17 +435,31 @@ async def get_dados_energia():
     else:
         # Tenta API online se local falhar
         try:
-            with urllib.request.urlopen("https://api.precosdoomie.pt/v1/today", timeout=3) as r:
+            context = ssl._create_unverified_context()
+            with urllib.request.urlopen("https://api.precosdoomie.pt/v1/today", timeout=3, context=context) as r:
                 dados_omie = json.loads(r.read().decode())
                 preco_omie_mwh = dados_omie['hours'][datetime.now().hour]['price']
                 origem_preco = "online"
         except:
             logger.error("Falha em todas as fontes de preço. Usando fallback.")
 
+    # Tenta obter previsão (Local com fallback automático para Online)
     previsao_omie = obter_previsao_omie_local()
+    agora_base = datetime.now()
+    
+    # Filtrar para mostrar apenas do "agora" em diante
+    agora_ts = agora_base.timestamp()
+    previsao_omie = [p for p in previsao_omie if p.get('ts', 0) >= agora_ts - 3600][:24]
+
     preco_kwh_base = preco_omie_mwh / 1000
     preco_final_kwh = ((preco_kwh_base * FADEQU * 1.15) + PERDAS_E_TAXAS + TARIFA_ACESSO) * IVA
-    
+
+    # Gera o detalhe do cálculo para o tooltip
+    detalhe_preco = (
+        f"(({preco_kwh_base:.4f}€ [Base] * {FADEQU} [FADEQU] * 1.15 [Ajuste]) + "
+        f"{PERDAS_E_TAXAS} [Perdas] + {TARIFA_ACESSO} [Acesso]) * {IVA} [IVA]"
+    )
+
     custo_por_hora = (potencia / 1000) * preco_final_kwh
 
     if potencia < -50:
@@ -421,7 +479,8 @@ async def get_dados_energia():
         "cor": cor,
         "motivo": motivo,
         "origem_preco": origem_preco,
-        "previsao": previsao_omie
+        "previsao": previsao_omie,
+        "detalhe_preco": detalhe_preco
     }
 
 if __name__ == '__main__':
